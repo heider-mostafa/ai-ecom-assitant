@@ -1,31 +1,39 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Wand2 } from "lucide-react"
+import { Wand2, Loader2 } from "lucide-react"
 import { FileUpload } from "../components/FileUpload"
 import { TypeSelector } from "../components/TypeSelector"
 import type { UploadState, ClothingType } from "../types"
 
-// API Credentials
+/**
+ * TODO: 
+ * Optimise the getResults function to avoid unnecessary retries
+ * Maybe add a loading spinner? 
+ * Add a "Try Again" button in case of error (optional)
+ * Implement function to download the result image.
+ * 
+ */
+
+// store API credentials in a .env file 
 const API_EMAIL = "mostafa.heider9@gmail.com"
 const API_PASSWORD = "DoDo1962004!"
-
-// Cloudinary Configuration
 const CLOUDINARY_CLOUD_NAME = "dyx5l8r9o"
 const CLOUDINARY_UPLOAD_PRESET = "ai-ecom-assitant"
 
-// Upload image to Cloudinary and return public URL
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
 async function uploadToServer(file: File): Promise<string> {
   const formData = new FormData()
   formData.append("file", file)
   formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET)
   formData.append("cloud_name", CLOUDINARY_CLOUD_NAME)
 
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
-    method: "POST",
-    body: formData,
-  })
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+    { method: "POST", body: formData }
+  )
 
   if (!response.ok) {
     throw new Error("Failed to upload image to Cloudinary")
@@ -36,8 +44,11 @@ async function uploadToServer(file: File): Promise<string> {
   return data.secure_url
 }
 
-// Generate try-on and get ID
-async function generateTryOn(modelUrl: string, clothingUrl: string, clothingType: ClothingType): Promise<string> {
+async function generateTryOn(
+  modelUrl: string,
+  clothingUrl: string,
+  clothingType: ClothingType
+): Promise<string> {
   const formData = new FormData()
   formData.append("email", API_EMAIL)
   formData.append("password", API_PASSWORD)
@@ -59,42 +70,45 @@ async function generateTryOn(modelUrl: string, clothingUrl: string, clothingType
   return id
 }
 
-// Retrieve results using the ID
 async function getResults(id: string): Promise<string> {
-  const formData = new FormData()
-  formData.append("email", API_EMAIL)
-  formData.append("password", API_PASSWORD)
-  formData.append("id", id)
+  const maxRetries = 20
 
-  let retries = 10 // Increase maximum number of retries
-  while (retries > 0) {
-    console.log(`Retrieving results... Attempt ${11 - retries}`)
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`Retrieving results... Attempt ${attempt}`)
 
-    const response = await fetch("https://thenewblack.ai/api/1.1/wf/results", {
-      method: "POST",
-      body: formData,
-    })
+    try {
+      const formData = new FormData()
+      formData.append("email", API_EMAIL)
+      formData.append("password", API_PASSWORD)
+      formData.append("id", id)
 
-    console.log("Response Status:", response.status)
-    console.log("Response OK:", response.ok)
+      const response = await fetch("https://thenewblack.ai/api/1.1/wf/results", {
+        method: "POST",
+        body: formData,
+        headers: { "Accept": "*/*" },
+      })
+      const trimmedResponse = (await response.text()).trim()
+      console.log("Response Status:", response.status)
 
-    if (response.ok) {
-      const resultUrl = await response.text()
-      console.log("Result URL Retrieved:", resultUrl)
-      return resultUrl
+      if (response.ok) {
+        if (trimmedResponse === "Processing...") {
+          console.log("Still processing, waiting 5 seconds...")
+        } else if (trimmedResponse.startsWith("http")) {
+          return trimmedResponse
+        } else {
+          console.error("Unexpected response:", trimmedResponse)
+        }
+      }
+    } catch (error) {
+      console.error("Network error:", error)
     }
 
-    retries--
-    if (retries === 0) {
-      console.error("Failed to retrieve results after multiple attempts")
-      throw new Error("Failed to retrieve results after multiple attempts")
+    if (attempt < maxRetries) {
+      await sleep(5000)
     }
-
-    console.log("Waiting 5 seconds before retrying...")
-    await new Promise((resolve) => setTimeout(resolve, 5000)) // Wait 5 seconds before retrying
   }
 
-  throw new Error("Failed to retrieve results")
+  throw new Error("Failed to retrieve results after maximum attempts")
 }
 
 export function VirtualTryOn() {
@@ -107,59 +121,79 @@ export function VirtualTryOn() {
     error: null,
   })
 
+  const { modelImage, clothingImage, clothingType, loading, error, result } = state
+
+  const [modelPreview, setModelPreview] = useState<string | null>(null)
+  const [clothingPreview, setClothingPreview] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (modelImage) {
+      const url = URL.createObjectURL(modelImage)
+      setModelPreview(url)
+      return () => URL.revokeObjectURL(url)
+    }
+    setModelPreview(null)
+  }, [modelImage])
+
+  useEffect(() => {
+    if (clothingImage) {
+      const url = URL.createObjectURL(clothingImage)
+      setClothingPreview(url)
+      return () => URL.revokeObjectURL(url)
+    }
+    setClothingPreview(null)
+  }, [clothingImage])
+
   const handleModelUpload = useCallback((file: File) => {
-    setState((prev) => ({ ...prev, modelImage: file }))
+    setState(prev => ({ ...prev, modelImage: file }))
   }, [])
 
   const handleClothingUpload = useCallback((file: File) => {
-    setState((prev) => ({ ...prev, clothingImage: file }))
+    setState(prev => ({ ...prev, clothingImage: file }))
   }, [])
 
   const handleTypeChange = useCallback((type: ClothingType) => {
-    setState((prev) => ({ ...prev, clothingType: type }))
+    setState(prev => ({ ...prev, clothingType: type }))
   }, [])
 
   const handleSubmit = useCallback(async () => {
-    if (!state.modelImage || !state.clothingImage) return
+    if (!modelImage || !clothingImage) return
 
-    setState((prev) => ({ ...prev, loading: true, error: null }))
+    setState(prev => ({ ...prev, loading: true, error: null, result: null }))
 
     try {
-      // Step 1: Upload images to get URLs
       const [modelUrl, clothingUrl] = await Promise.all([
-        uploadToServer(state.modelImage),
-        uploadToServer(state.clothingImage),
+        uploadToServer(modelImage),
+        uploadToServer(clothingImage),
       ])
-
       console.log("Model URL:", modelUrl)
       console.log("Clothing URL:", clothingUrl)
 
-      // Step 2: Generate try-on and get ID
-      const id = await generateTryOn(modelUrl, clothingUrl, state.clothingType)
+      const id = await generateTryOn(modelUrl, clothingUrl, clothingType)
 
-      // Step 3: Retrieve results
       const resultUrl = await getResults(id)
-
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        result: resultUrl,
-      }))
+      setState(prev => ({ ...prev, loading: false, result: resultUrl }))
     } catch (error) {
       console.error("Error:", error)
-      setState((prev) => ({
+      setState(prev => ({
         ...prev,
         loading: false,
         error: error instanceof Error ? error.message : "An error occurred",
       }))
     }
-  }, [state.modelImage, state.clothingImage, state.clothingType])
+  }, [modelImage, clothingImage, clothingType])
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-12">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center mb-12"
+      >
         <h1 className="text-4xl font-bold text-gray-900 mb-4">Virtual Try-On</h1>
-        <p className="text-gray-600">Experience how clothes look on you with AI-powered virtual try-on</p>
+        <p className="text-gray-600">
+          Experience how clothes look on you with AI-powered virtual try-on
+        </p>
       </motion.div>
       <div className="grid md:grid-cols-2 gap-8">
         <div className="space-y-6">
@@ -167,41 +201,57 @@ export function VirtualTryOn() {
             label="Upload your photo"
             onFileSelect={handleModelUpload}
             accept={{ "image/*": [".png", ".jpg", ".jpeg"] }}
-            preview={state.modelImage ? URL.createObjectURL(state.modelImage) : null}
+            preview={modelPreview}
           />
 
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-center">Select clothing type</h3>
-            <TypeSelector value={state.clothingType} onChange={handleTypeChange} />
+            <TypeSelector value={clothingType} onChange={handleTypeChange} />
           </div>
+
           <FileUpload
             label="Upload clothing item"
             onFileSelect={handleClothingUpload}
             accept={{ "image/*": [".png", ".jpg", ".jpeg"] }}
-            preview={state.clothingImage ? URL.createObjectURL(state.clothingImage) : null}
+            preview={clothingPreview}
           />
+
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleSubmit}
-            disabled={!state.modelImage || !state.clothingImage || state.loading}
-            className={`
-              w-full py-3 px-6 rounded-lg flex items-center justify-center space-x-2
-              ${
-                state.loading || !state.modelImage || !state.clothingImage
-                  ? "bg-gray-200 cursor-not-allowed"
-                  : "bg-blue-500 hover:bg-blue-600 text-white"
-              }
-              transition-colors duration-200
-            `}
+            disabled={!modelImage || !clothingImage || loading}
+            className={`w-full py-3 px-6 rounded-lg flex items-center justify-center space-x-2 transition-colors duration-200 ${
+              loading || !modelImage || !clothingImage
+                ? "bg-gray-200 cursor-not-allowed"
+                : "bg-blue-500 hover:bg-blue-600 text-white"
+            }`}
           >
-            <Wand2 className="w-5 h-5" />
-            <span>{state.loading ? "Processing (this may take up to 40 seconds)..." : "Generate Try-On"}</span>
+            {loading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Wand2 className="w-5 h-5" />
+            )}
+            <span>
+              {loading
+                ? "Processing (this may take up to 40 seconds)..."
+                : "Generate Try-On"}
+            </span>
           </motion.button>
-          {state.error && <div className="p-4 bg-red-50 text-red-600 rounded-lg">{state.error}</div>}
+
+          {/* Optional error message with a Try Again button */}
+          {error && (
+            <div className="p-4 bg-red-50 text-red-600 rounded-lg flex items-center justify-between">
+              <span>{error}</span>
+              <button onClick={handleSubmit} className="text-blue-500 hover:underline">
+                Try Again
+              </button>
+            </div>
+          )}
         </div>
+
         <AnimatePresence>
-          {state.result && (
+          {result && (
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -209,7 +259,7 @@ export function VirtualTryOn() {
               className="bg-white rounded-lg p-4 shadow-lg"
             >
               <img
-                src={state.result || "/placeholder.svg"}
+                src={result || "/placeholder.svg"}
                 alt="Virtual try-on result"
                 className="w-full h-auto rounded-lg"
               />
@@ -220,4 +270,3 @@ export function VirtualTryOn() {
     </div>
   )
 }
-
